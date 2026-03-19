@@ -528,7 +528,7 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
 ### see mboost_fit for the dots
 mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
                    offset = NULL, family = Gaussian(), control = boost_control(),
-                   oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns"),
+                   oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns", "bnnls"),
                    init_model = NULL, ...) {
 
 

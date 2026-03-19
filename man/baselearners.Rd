@@ -10,6 +10,7 @@
 \alias{brandom}
 \alias{btree}
 \alias{bmono}
+\alias{bnnls}
 \alias{bmrf}
 \alias{buser}
 \alias{bns}
@@ -66,6 +67,10 @@ bmono(...,
       contrasts.arg = "contr.treatment",
       boundary.constraints = FALSE,
       cons.arg = list(lambda = 1e+06, n = NULL, diff_order = NULL))
+
+## non-negative linear base-learner
+bnnls(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
+     lambda = 0, contrasts.arg = "contr.treatment")
 
 ## Markov random field base-learner
 bmrf(..., by = NULL, index = NULL, bnd = NULL, df = 4, lambda = NULL,
@@ -420,6 +425,14 @@ bl1 \%O\% bl2
   as T-splines show undesirable behaviour if the observed data deviates 
   from monotonicty.
 
+  \code{bnnls} specifies a linear base-learner (like \code{bols}) where the
+  slope coefficients are constrained to be non-negative via quadratic
+  programming (\code{\link[quadprog]{solve.QP}}). When \code{intercept = TRUE}
+  (the default), the intercept is unconstrained while all slope coefficients
+  are forced to be >= 0. This is useful in boosting settings where the
+  effect of a covariate is known to be non-negative. The interface is
+  identical to \code{bols}; the only difference is the constrained estimation.
+
   Two or more linear base-learners can be joined using \code{\%+\%}. A
   tensor product of two or more linear base-learners is returned by
   \code{\%X\%}. When the design matrix can be written as the Kronecker
@@ -597,6 +610,15 @@ bl1 \%O\% bl2
   coef(model, which = 1)   # one base-learner for x1 and x2
   coef(model, which = 2:3) # two separate base-learners for x1 and x2
                            # zero because they were (not yet) selected.
+
+  ### non-negative least squares base-learner
+  set.seed(1234)
+  x_pos <- rnorm(100)
+  y_pos <- 2 * x_pos + rnorm(100)
+  ## coefficient should be close to 2
+  mod_nnls <- mboost(y_pos ~ bnnls(x_pos),
+                     control = boost_control(mstop = 100))
+  coef(mod_nnls)
 
   ### example for bspatial
   x1 <- runif(250,-pi,pi)

@@ -1,8 +1,30 @@
 
+validate_init_model <- function(init_model, blg, family) {
+    if (!inherits(init_model, "mboost"))
+        stop(sQuote("init_model"),
+             " must be a fitted mboost model (class ", sQuote("mboost"), ")")
+
+    if (init_model$family@name != family@name)
+        stop(sQuote("init_model"), " family (", sQuote(init_model$family@name),
+             ") does not match the specified family (",
+             sQuote(family@name), ")")
+
+    init_bl <- sort(names(init_model$baselearner))
+    new_bl <- sort(names(blg))
+    if (!setequal(init_bl, new_bl))
+        stop(sQuote("init_model"),
+             " base-learners do not match the specified formula.\n",
+             "  Expected: ", paste(new_bl, collapse = ", "), "\n",
+             "  Got: ", paste(init_bl, collapse = ", "))
+
+    invisible(TRUE)
+}
+
 mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                        offset = NULL, family = Gaussian(),
                        control = boost_control(),
-                       oobweights = as.numeric(weights == 0)) {
+                       oobweights = as.numeric(weights == 0),
+                       init_model = NULL, init_fit = NULL) {
 
     ### hyper parameters
     mstop <- 0
@@ -59,6 +81,9 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
     blfit <- lapply(bl, function(x) x$fit)
     fit1 <- blfit[[1]]
 
+    if (!is.null(init_model))
+        validate_init_model(init_model, blg, family)
+
     if (identical("Negative Multinomial Likelihood", family@name)
         && ! all(vapply(bl, inherits, FALSE, what = "bl_kronecker")))
         stop(sQuote("family = Multinomial()"), " only works with Kronecker prodcut base-learners, ",
@@ -77,6 +102,12 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
         fit <- offset <- family@offset(y, weights)
     if (length(fit) == 1)
         fit <- rep(fit, NROW(y))
+    if (!is.null(init_fit)) {
+        if (length(init_fit) != NROW(y))
+            stop("length of 'init_fit' (", length(init_fit),
+                 ") does not match number of observations (", NROW(y), ")")
+        fit <- init_fit
+    }
     u <- ustart <- ngradient(y, fit, weights)
     
     ### vector of empirical risks for all boosting iterations
@@ -192,7 +223,9 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                     paste("obs", 1:length(weights), sep = ""),
                 "(weights)" = weights,      ### weights used for fitting
                 nuisance =
-                    function() nuisance     ### list of nuisance parameters
+                    function() nuisance,    ### list of nuisance parameters
+                init_model = init_model,    ### init model
+                init_fit = init_fit         ### init fit vector
     )
 
     ### update to new weights; just a fresh start
@@ -208,7 +241,10 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
         if (!is.null(offsetarg)) offsetarg <- offset
         mboost_fit(blg = blg, response = response, weights = weights,
                    offset = offsetarg, family = family, control = control,
-                   oobweights = oobweights)
+                   oobweights = oobweights,
+                   init_model = init_model,
+                   init_fit = init_fit)  ### frozen: init_fit is pre-computed on full data;
+                                        ### zero-weight OOB rows keep row alignment intact
     }
 
     ### number of iterations performed so far
@@ -268,7 +304,7 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                 if (!is.null(newdata))
                     return(rep(offset, NROW(newdata)))
                 return(rep(offset, NROW(y)))
-            } 
+            }
             if (!is.null(newdata)) {
                 warning("User-specified offset is not a scalar, ",
                         "thus it cannot be used for predictions when ",
@@ -297,6 +333,26 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
             m
         }
 
+        add_baseline <- function(ret) {
+            if (!is.null(init_model) && !is.null(newdata)) {
+                baseline <- init_model$predict(newdata = newdata)
+                if (is.matrix(ret)) return(sweep(ret, 1, as.vector(baseline), "+"))
+                return(ret + baseline)
+            }
+            if (!is.null(init_fit) && is.null(newdata)) {
+                if (is.matrix(ret)) return(sweep(ret, 1, as.vector(init_fit), "+"))
+                return(ret + init_fit)
+            }
+            if (length(offset) != 1 && !is.null(newdata)) {
+                warning("User-specified offset is not a scalar, ",
+                        "thus it cannot be used for predictions when ",
+                        sQuote("newdata"), " is specified.")
+                return(ret)
+            }
+            if (is.matrix(ret)) return(sweep(ret, 1, offset, "+"))
+            ret + offset
+        }
+
         pr <- switch(aggregate, "sum" = {
             pr <- lapply(which, pfun, agg = "sum")
             if (!nw){
@@ -310,13 +366,7 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                 ## only if no selection of baselearners
                 ## was made via the `which' argument
                 ret <- Reduce("+", pr)
-                if (length(offset) != 1 && !is.null(newdata)) {
-                    warning("User-specified offset is not a scalar, ",
-                            "thus it cannot be used for predictions when ",
-                            sQuote("newdata"), " is specified.")
-                } else {
-                    ret <- ret + offset
-                }
+                ret <- add_baseline(ret)
                 return(ret)
             }
         }, "cumsum" = {
@@ -332,15 +382,7 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                 pr <- 0
                 for (i in 1:max(xselect)) pr <- pr + pfun(i, agg = "none")
                 pr <- .Call("R_mcumsum", as(pr, "matrix"), PACKAGE = "mboost")
-                if (length(offset) != 1 && !is.null(newdata)) {
-                    warning(sQuote("length(offset) > 1"),
-                            ": User-specified offset is not a scalar, ",
-                            "thus offset not used for prediction when ",
-                            sQuote("newdata"), " is specified")
-                } else {
-                    pr <- pr + offset
-                }
-                return(pr)
+                return(add_baseline(pr))
             }
          }, "none" = {
             if (!nw) {
@@ -353,6 +395,12 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
                 pr <- 0
                 for (i in 1:max(xselect)) pr <- pr + pfun(i, agg = "none")
                 pr <- as(pr, "matrix")
+                if (!is.null(init_model) && !is.null(newdata)) {
+                    baseline <- init_model$predict(newdata = newdata)
+                    pr <- sweep(pr, 1, as.vector(baseline), "+")
+                } else if (!is.null(init_fit) && is.null(newdata)) {
+                    pr <- sweep(pr, 1, as.vector(init_fit), "+")
+                }
                 attr(pr, "offset") <- offset
                 return(pr)
             }
@@ -478,10 +526,10 @@ mboost_fit <- function(blg, response, weights = rep(1, NROW(response)),
 ### is evaluated as
 ###     y ~ bols3(x1) + baselearner(x2) + btree(x3)
 ### see mboost_fit for the dots
-mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL, 
+mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
                    offset = NULL, family = Gaussian(), control = boost_control(),
-                   oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns"), 
-                   ...) {
+                   oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns"),
+                   init_model = NULL, ...) {
 
 
     ## We need at least variable names to go ahead
@@ -530,6 +578,9 @@ mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
     }
     stopifnot(is.function(baselearner))
 
+    if (!is.null(init_model) && !is.data.frame(data))
+        stop("'data' must be a data.frame when 'init_model' is specified")
+
     ### instead of evaluating a model.frame, we evaluate
     ### the expressions on the rhs of formula directly
     "+" <- function(a,b) {
@@ -572,11 +623,21 @@ mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
     ### get the response
     response <- eval(as.expression(formula[[2]]), envir = data,
                      enclos = environment(formula))
-    
-    ret <- mboost_fit(bl, response = response, weights = weights, 
-                      offset = offset, family = family, 
-                      control = control, oobweights = oobweights, ...)
-    
+
+    init_fit <- NULL
+    if (!is.null(init_model)) {
+        if (!inherits(init_model, "mboost"))
+            stop(sQuote("init_model"), " must be a fitted mboost model")
+        if (!is.data.frame(data))
+            stop("'data' must be a data.frame when 'init_model' is specified")
+        init_fit <- predict(init_model, newdata = data)
+    }
+
+    ret <- mboost_fit(bl, response = response, weights = weights,
+                      offset = offset, family = family,
+                      control = control, oobweights = oobweights,
+                      init_model = init_model, init_fit = init_fit, ...)
+
     if (is.data.frame(data) && nrow(data) == length(response))
         ret$rownames <- rownames(data)
     else
@@ -586,10 +647,10 @@ mboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
 }
 
 ### nothing to do there
-gamboost <- function(formula, data = list(), na.action = na.omit, weights = NULL, 
+gamboost <- function(formula, data = list(), na.action = na.omit, weights = NULL,
                      offset = NULL, family = Gaussian(), control = boost_control(),
-                     oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns"), 
-                     dfbase = 4, ...) {
+                     oobweights = NULL, baselearner = c("bbs", "bols", "btree", "bss", "bns"),
+                     dfbase = 4, init_model = NULL, ...) {
 
     if (is.character(baselearner)) {
         baselearner <- match.arg(baselearner)
@@ -604,10 +665,10 @@ gamboost <- function(formula, data = list(), na.action = na.omit, weights = NULL
     if (isTRUE(all.equal(baselearner, bbs)))
         baselearner <- function(...) bbs(as.data.frame(list(...)), df = dfbase)
     
-    ret <- mboost(formula = formula, data = data, na.action = na.action, 
-                  weights = weights, offset = offset, family = family, 
+    ret <- mboost(formula = formula, data = data, na.action = na.action,
+                  weights = weights, offset = offset, family = family,
                   control = control, oobweights = oobweights,
-                  baselearner = baselearner, ...)
+                  baselearner = baselearner, init_model = init_model, ...)
     ret$call <- match.call()
     class(ret) <- c("gamboost", class(ret))
     ret
@@ -617,9 +678,10 @@ gamboost <- function(formula, data = list(), na.action = na.omit, weights = NULL
 ### just one single tree-based baselearner
 blackboost <- function(formula, data = list(),
                        weights = NULL, na.action = na.pass,
-                       offset = NULL, family = Gaussian(), 
+                       offset = NULL, family = Gaussian(),
                        control = boost_control(),
                        oobweights = NULL,
+                       init_model = NULL,
                        tree_controls = partykit::ctree_control(
                            teststat = "quad",
                            testtype = "Teststatistic",
@@ -645,9 +707,20 @@ blackboost <- function(formula, data = list(),
     ## drop weights
     mf$"(weights)" <- NULL
     bl <- list(btree(mf, tree_controls = tree_controls))
-    ret <- mboost_fit(bl, response = response,  weights = weights, 
-                      offset = offset, family = family, 
-                      control = control, oobweights = oobweights, ...)
+
+    init_fit <- NULL
+    if (!is.null(init_model)) {
+        if (!inherits(init_model, "mboost"))
+            stop(sQuote("init_model"), " must be a fitted mboost model")
+        if (!is.data.frame(data))
+            stop("'data' must be a data.frame when 'init_model' is specified")
+        init_fit <- predict(init_model, newdata = data)
+    }
+
+    ret <- mboost_fit(bl, response = response, weights = weights,
+                      offset = offset, family = family,
+                      control = control, oobweights = oobweights,
+                      init_model = init_model, init_fit = init_fit, ...)
     ret$call <- cl
     ret$rownames <- rownames(mf)
     class(ret) <- c("blackboost", class(ret))
@@ -660,8 +733,8 @@ glmboost <- function(x, ...) UseMethod("glmboost", x)
 glmboost.formula <- function(formula, data = list(), weights = NULL,
                              offset = NULL, family = Gaussian(),
                              na.action = na.pass, contrasts.arg = NULL,
-                             center = TRUE, control = boost_control(), 
-                             oobweights = NULL, ...) {
+                             center = TRUE, control = boost_control(),
+                             oobweights = NULL, init_model = NULL, ...) {
 
     ## We need at least variable names to go ahead
     if (length(formula[[3]]) == 1) {
@@ -712,9 +785,20 @@ glmboost.formula <- function(formula, data = list(), weights = NULL,
     bl <- list(bolscw(X))
     response <- model.response(mf)
     weights <- model.weights(mf)
-    ret <- mboost_fit(bl, response = response, weights = weights, 
-                      offset = offset, family = family, 
-                      control = control, oobweights = oobweights, ...)
+
+    init_fit <- NULL
+    if (!is.null(init_model)) {
+        if (!inherits(init_model, "mboost"))
+            stop(sQuote("init_model"), " must be a fitted mboost model")
+        if (!is.data.frame(data))
+            stop("'data' must be a data.frame when 'init_model' is specified")
+        init_fit <- predict(init_model, newdata = data)
+    }
+
+    ret <- mboost_fit(bl, response = response, weights = weights,
+                      offset = offset, family = family,
+                      control = control, oobweights = oobweights,
+                      init_model = init_model, init_fit = init_fit, ...)
     ret$newX <- newX
     ret$assign <- assign
     ret$center <- cm
@@ -771,8 +855,8 @@ glmboost.formula <- function(formula, data = list(), weights = NULL,
 
 glmboost.matrix <- function(x, y, center = TRUE, weights = NULL,
                             offset = NULL, family = Gaussian(),
-                            na.action = na.pass, control = boost_control(), 
-                            oobweights = NULL, ...) {
+                            na.action = na.pass, control = boost_control(),
+                            oobweights = NULL, init_model = NULL, ...) {
 
     X <- x
     if (nrow(X) != NROW(y))
@@ -824,9 +908,18 @@ glmboost.matrix <- function(x, y, center = TRUE, weights = NULL,
         return(NULL)
     }
     bl <- list(bolscw(X))
-    ret <- mboost_fit(bl, response = y, weights = weights, 
-                      offset = offset, family = family, 
-                      control = control, oobweights = oobweights, ...)
+
+    init_fit <- NULL
+    if (!is.null(init_model)) {
+        if (!inherits(init_model, "mboost"))
+            stop(sQuote("init_model"), " must be a fitted mboost model")
+        init_fit <- predict(init_model, newdata = x)
+    }
+
+    ret <- mboost_fit(bl, response = y, weights = weights,
+                      offset = offset, family = family,
+                      control = control, oobweights = oobweights,
+                      init_model = init_model, init_fit = init_fit, ...)
     ret$newX <- newX
     ret$assign <- assign
     ret$center <- cm

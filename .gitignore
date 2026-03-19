@@ -1,1 +1,4 @@
 plans/
+_analysis
+src/*.o
+src/*.so

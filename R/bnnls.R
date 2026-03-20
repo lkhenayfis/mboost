@@ -38,13 +38,8 @@ bl_lin_nnls <- function(blg, Xfun, args) {
         XtX <- XtX + options("mboost_eps")[[1]] * diag(ncol(XtX))
 
         p <- ncol(X)
-        if (args$intercept) {
-            Amat <- diag(p)[, -1, drop = FALSE]
-            bvec <- rep(0, p - 1)
-        } else {
-            Amat <- diag(p)
-            bvec <- rep(0, p)
-        }
+        Amat <- diag(p)
+        bvec <- rep(0, p)
 
         Dmat <- (XtX + t(XtX)) / 2
 
@@ -137,7 +132,7 @@ bl_lin_nnls <- function(blg, Xfun, args) {
     return(dpp)
 }
 
-bnnls <- function(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
+bnnls <- function(..., by = NULL, index = NULL, df = NULL,
                  lambda = 0, contrasts.arg = "contr.treatment") {
 
     if (!is.null(df)) lambda <- NULL
@@ -146,6 +141,16 @@ bnnls <- function(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
     cll[[1]] <- as.name("bnnls")
 
     mf <- list(...)
+
+    ## guard against defunct arguments captured by ...
+    dots_names <- names(mf)
+    if ("intercept" %in% dots_names)
+        stop(sQuote("intercept"), " argument has been removed from ", sQuote("bnnls()"),
+             ". bnnls() now always constrains all coefficients to be non-negative ",
+             "with no intercept.")
+    if ("center" %in% dots_names && is.logical(mf[["center"]]))
+        stop(sQuote("center"), " argument is not supported in ", sQuote("bnnls()"), ".")
+
     if (is.null(by)) {
         tmp <- mf
     } else {
@@ -155,12 +160,6 @@ bnnls <- function(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
         warning("The elements in ... or by imply different number of rows: ",
                 paste(unique(sapply(tmp, length)), collapse = ", "))
     rm("tmp")
-
-    ## check that center = TRUE/FALSE is not specified in ...
-    if ("center" %in% names(mf) &&
-        (length(mf[["center"]]) == 1 && is.logical(mf[["center"]])))
-        stop(sQuote("bnnls(, center = TRUE/FALSE)"), " is deprecated. Please use ",
-             sQuote("bnnls(, intercept = TRUE/FALSE)"), " instead.")
 
     if (length(mf) == 1 && ((isMATRIX(mf[[1]]) || is.data.frame(mf[[1]])) &&
                             ncol(mf[[1]]) > 1 )) {
@@ -172,16 +171,6 @@ bnnls <- function(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
         mf <- as.data.frame(mf)
         cl <- as.list(match.call(expand.dots = FALSE))[2][[1]]
         colnames(mf) <- sapply(cl, function(x) as.character(x))
-    }
-    if(!intercept && !any(sapply(mf, is.factor)) &&
-       !any(sapply(mf, function(x){uni <- unique(x);
-                                   length(uni[!is.na(uni)])}) == 1)){
-        ## if no intercept is used and no covariate is a factor
-        ## and if no intercept is specified (i.e. mf[[i]] is constant)
-        if (any(sapply(mf, function(x) abs(mean(x, na.rm=TRUE) / sd(x,na.rm=TRUE))) > 0.1))
-            ## if covariate mean is not near zero
-            warning("covariates should be (mean-) centered if ",
-                    sQuote("intercept = FALSE"))
     }
     vary <- ""
     if (!is.null(by)){
@@ -244,6 +233,6 @@ bnnls <- function(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
 
     ret$dpp <- bl_lin_nnls(ret, Xfun = X_ols, args = hyper_ols(
                       df = df, lambda = lambda,
-                      intercept = intercept, contrasts.arg = contrasts.arg))
+                      intercept = FALSE, contrasts.arg = contrasts.arg))
     return(ret)
 }

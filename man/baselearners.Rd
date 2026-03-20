@@ -69,7 +69,7 @@ bmono(...,
       cons.arg = list(lambda = 1e+06, n = NULL, diff_order = NULL))
 
 ## non-negative linear base-learner
-bnnls(..., by = NULL, index = NULL, intercept = TRUE, df = NULL,
+bnnls(..., by = NULL, index = NULL, df = NULL,
      lambda = 0, contrasts.arg = "contr.treatment")
 
 ## Markov random field base-learner
@@ -425,13 +425,14 @@ bl1 \%O\% bl2
   as T-splines show undesirable behaviour if the observed data deviates 
   from monotonicty.
 
-  \code{bnnls} specifies a linear base-learner (like \code{bols}) where the
-  slope coefficients are constrained to be non-negative via quadratic
-  programming (\code{\link[quadprog]{solve.QP}}). When \code{intercept = TRUE}
-  (the default), the intercept is unconstrained while all slope coefficients
-  are forced to be >= 0. This is useful in boosting settings where the
-  effect of a covariate is known to be non-negative. The interface is
-  identical to \code{bols}; the only difference is the constrained estimation.
+  \code{bnnls} specifies a linear base-learner (like \code{bols}) where
+  all coefficients are constrained to be non-negative via quadratic
+  programming (\code{\link[quadprog]{solve.QP}}). Unlike \code{bols},
+  \code{bnnls} never fits an intercept; the model-level offset handles
+  the overall mean. This is useful in boosting settings where the
+  effect of a covariate is known to be non-negative, particularly for
+  spline bases where monotonicity constraints and zero-boundary behavior
+  are required.
 
   Two or more linear base-learners can be joined using \code{\%+\%}. A
   tensor product of two or more linear base-learners is returned by
